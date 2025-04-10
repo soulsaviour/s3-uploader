@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "s3up"
+dynamic = ["version"]
+description = "Upload files and directories to Amazon S3."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["boto3>=1.34"]
+
+[project.scripts]
+s3up = "s3up.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "s3up.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
