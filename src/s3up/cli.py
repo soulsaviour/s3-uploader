@@ -3,13 +3,29 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .uploader import parse_s3_url, upload_file
+from .uploader import parse_s3_url, upload_tree
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="s3up", description="Upload a file to S3.")
-    parser.add_argument("source", type=Path, help="file to upload")
+    parser = argparse.ArgumentParser(
+        prog="s3up", description="Upload a file or a directory tree to S3."
+    )
+    parser.add_argument("source", type=Path, help="file or directory to upload")
     parser.add_argument("destination", help="s3://bucket[/prefix]")
+    parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="only upload paths matching GLOB (repeatable)",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="skip paths matching GLOB (repeatable)",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -17,16 +33,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not args.source.is_file():
-        parser.error(f"{args.source} is not a file")
+    if not args.source.exists():
+        parser.error(f"{args.source} does not exist")
     try:
         bucket, prefix = parse_s3_url(args.destination)
     except ValueError as err:
         parser.error(str(err))
 
-    key = f"{prefix.strip('/')}/{args.source.name}" if prefix.strip("/") else args.source.name
-    upload_file(args.source, bucket, key)
-    print(f"uploaded: s3://{bucket}/{key}")
+    keys = upload_tree(args.source, bucket, prefix, include=args.include, exclude=args.exclude)
+    for key in keys:
+        print(f"uploaded: s3://{bucket}/{key}")
+    print(f"{len(keys)} file(s) uploaded", file=sys.stderr)
     return 0
 
 
