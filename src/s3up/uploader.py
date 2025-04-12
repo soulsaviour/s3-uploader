@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import fnmatch
+import sys
+import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import boto3
+from boto3.s3.transfer import TransferConfig
+from botocore.config import Config
+
+MB = 1024 * 1024
 
 
 def parse_s3_url(url: str) -> tuple[str, str]:
@@ -48,20 +54,75 @@ def object_key(prefix: str, source: Path, path: Path) -> str:
     return f"{prefix}/{relative}" if prefix else relative
 
 
-def upload_tree(
-    source: Path,
-    bucket: str,
-    prefix: str = "",
-    *,
-    include: Sequence[str] = (),
-    exclude: Sequence[str] = (),
-    client=None,
-) -> list[str]:
-    """Upload a file or directory; returns the keys written."""
-    client = client or boto3.client("s3")
-    keys = []
-    for path in iter_files(source, include, exclude):
-        key = object_key(prefix, source, path)
-        client.upload_file(str(path), bucket, key)
-        keys.append(key)
-    return keys
+class Progress:
+    """Prints how much of a file has been sent, in 25% steps.
+
+    boto3 calls this from several threads during multipart uploads.
+    """
+
+    def __init__(self, path: Path, stream=sys.stderr):
+        self._name = path.name
+        self._size = path.stat().st_size
+        self._sent = 0
+        self._last_step = -1
+        self._lock = threading.Lock()
+        self._stream = stream
+
+    def __call__(self, bytes_sent: int) -> None:
+        with self._lock:
+            self._sent += bytes_sent
+            percent = 100 if not self._size else min(100, self._sent * 100 // self._size)
+            step = percent // 25
+            if step != self._last_step:
+                self._last_step = step
+                print(f"  {self._name}: {percent}%", file=self._stream)
+
+
+class Uploader:
+    def __init__(
+        self,
+        client=None,
+        *,
+        chunk_size_mb: int = 16,
+        concurrency: int = 8,
+        progress: bool = False,
+    ):
+        # Adaptive retries back off on throttling (503 SlowDown) as well as
+        # transient network errors.
+        self.client = client or boto3.client(
+            "s3", config=Config(retries={"mode": "adaptive", "max_attempts": 10})
+        )
+        # Files above the threshold go up as multipart uploads, with parts sent
+        # in parallel. S3's minimum part size is 5 MB.
+        self.transfer_config = TransferConfig(
+            multipart_threshold=chunk_size_mb * MB,
+            multipart_chunksize=chunk_size_mb * MB,
+            max_concurrency=concurrency,
+        )
+        self.progress = progress
+
+    def upload(self, path: Path, bucket: str, key: str) -> None:
+        self.client.upload_file(
+            str(path),
+            bucket,
+            key,
+            Config=self.transfer_config,
+            Callback=Progress(path) if self.progress else None,
+        )
+
+    def upload_tree(
+        self,
+        source: Path,
+        bucket: str,
+        prefix: str = "",
+        *,
+        include: Sequence[str] = (),
+        exclude: Sequence[str] = (),
+    ) -> list[str]:
+        """Upload a file or directory; returns the keys written."""
+        keys = []
+        for path in iter_files(source, include, exclude):
+            key = object_key(prefix, source, path)
+            self.upload(path, bucket, key)
+            keys.append(key)
+        return keys
