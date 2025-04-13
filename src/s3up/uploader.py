@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import sys
 import threading
 from collections.abc import Iterator, Sequence
@@ -11,6 +12,7 @@ from pathlib import Path
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 MB = 1024 * 1024
 
@@ -52,6 +54,15 @@ def object_key(prefix: str, source: Path, path: Path) -> str:
     relative = path.name if source.is_file() else path.relative_to(source).as_posix()
     prefix = prefix.strip("/")
     return f"{prefix}/{relative}" if prefix else relative
+
+
+def sha256_file(path: Path, chunk_size: int = MB) -> str:
+    """Hex SHA-256 of a file, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class Progress:
@@ -101,14 +112,34 @@ class Uploader:
         )
         self.progress = progress
 
-    def upload(self, path: Path, bucket: str, key: str) -> None:
+    def remote_sha256(self, bucket: str, key: str) -> str | None:
+        """The sha256 s3up stored on an existing object, or None."""
+        try:
+            head = self.client.head_object(Bucket=bucket, Key=key)
+        except ClientError as err:
+            if err.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise
+        return head.get("Metadata", {}).get("sha256")
+
+    def upload(self, path: Path, bucket: str, key: str, *, force: bool = False) -> bool:
+        """Upload one file. Returns False if S3 already has identical content."""
+        digest = sha256_file(path)
+        if not force and self.remote_sha256(bucket, key) == digest:
+            return False
+        # S3 verifies each part against a SHA-256 checksum on arrival. For
+        # multipart uploads S3's own checksum is a checksum of the parts, so
+        # the whole-file digest is also kept in metadata to detect changes.
+        extra_args = {"ChecksumAlgorithm": "SHA256", "Metadata": {"sha256": digest}}
         self.client.upload_file(
             str(path),
             bucket,
             key,
+            ExtraArgs=extra_args,
             Config=self.transfer_config,
             Callback=Progress(path) if self.progress else None,
         )
+        return True
 
     def upload_tree(
         self,
@@ -118,11 +149,14 @@ class Uploader:
         *,
         include: Sequence[str] = (),
         exclude: Sequence[str] = (),
-    ) -> list[str]:
-        """Upload a file or directory; returns the keys written."""
-        keys = []
+        force: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        """Upload a file or directory. Returns (uploaded keys, unchanged keys)."""
+        uploaded, unchanged = [], []
         for path in iter_files(source, include, exclude):
             key = object_key(prefix, source, path)
-            self.upload(path, bucket, key)
-            keys.append(key)
-        return keys
+            if self.upload(path, bucket, key, force=force):
+                uploaded.append(key)
+            else:
+                unchanged.append(key)
+        return uploaded, unchanged

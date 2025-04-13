@@ -40,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="parts uploaded in parallel per file (default 8)",
     )
     parser.add_argument("--progress", action="store_true", help="show per-file progress")
+    parser.add_argument(
+        "--force", action="store_true", help="upload even when S3 already has identical content"
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -59,12 +62,12 @@ def main(argv=None) -> int:
     uploader = Uploader(
         chunk_size_mb=args.chunk_size, concurrency=args.concurrency, progress=args.progress
     )
-    keys = uploader.upload_tree(
-        args.source, bucket, prefix, include=args.include, exclude=args.exclude
+    uploaded, unchanged = uploader.upload_tree(
+        args.source, bucket, prefix, include=args.include, exclude=args.exclude, force=args.force
     )
-    for key in keys:
+    for key in uploaded:
         print(f"uploaded: s3://{bucket}/{key}")
-    print(f"{len(keys)} file(s) uploaded", file=sys.stderr)
+    print(f"{len(uploaded)} uploaded, {len(unchanged)} unchanged", file=sys.stderr)
     return 0
 
 
