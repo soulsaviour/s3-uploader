@@ -6,6 +6,17 @@ from . import __version__
 from .uploader import Uploader, parse_s3_url
 
 
+STORAGE_CLASSES = [
+    "STANDARD",
+    "STANDARD_IA",
+    "ONEZONE_IA",
+    "INTELLIGENT_TIERING",
+    "GLACIER_IR",
+    "GLACIER",
+    "DEEP_ARCHIVE",
+]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="s3up", description="Upload a file or a directory tree to S3."
@@ -39,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=8,
         help="parts uploaded in parallel per file (default 8)",
     )
+    parser.add_argument("--storage-class", choices=STORAGE_CLASSES, help="S3 storage class")
+    parser.add_argument("--sse", choices=["AES256", "aws:kms"], help="server-side encryption")
+    parser.add_argument(
+        "--kms-key-id", help="KMS key for --sse aws:kms (default: the AWS managed key)"
+    )
     parser.add_argument("--progress", action="store_true", help="show per-file progress")
     parser.add_argument(
         "--force", action="store_true", help="upload even when S3 already has identical content"
@@ -52,6 +68,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if not args.source.exists():
         parser.error(f"{args.source} does not exist")
+    if args.kms_key_id and args.sse != "aws:kms":
+        parser.error("--kms-key-id needs --sse aws:kms")
     if args.chunk_size < 5:
         parser.error("--chunk-size must be at least 5 (S3's minimum part size)")
     try:
@@ -60,7 +78,12 @@ def main(argv=None) -> int:
         parser.error(str(err))
 
     uploader = Uploader(
-        chunk_size_mb=args.chunk_size, concurrency=args.concurrency, progress=args.progress
+        chunk_size_mb=args.chunk_size,
+        concurrency=args.concurrency,
+        storage_class=args.storage_class,
+        sse=args.sse,
+        kms_key_id=args.kms_key_id,
+        progress=args.progress,
     )
     uploaded, unchanged = uploader.upload_tree(
         args.source, bucket, prefix, include=args.include, exclude=args.exclude, force=args.force

@@ -96,6 +96,9 @@ class Uploader:
         *,
         chunk_size_mb: int = 16,
         concurrency: int = 8,
+        storage_class: str | None = None,
+        sse: str | None = None,
+        kms_key_id: str | None = None,
         progress: bool = False,
     ):
         # Adaptive retries back off on throttling (503 SlowDown) as well as
@@ -110,6 +113,13 @@ class Uploader:
             multipart_chunksize=chunk_size_mb * MB,
             max_concurrency=concurrency,
         )
+        self.extra_args: dict = {"ChecksumAlgorithm": "SHA256"}
+        if storage_class:
+            self.extra_args["StorageClass"] = storage_class
+        if sse:
+            self.extra_args["ServerSideEncryption"] = sse
+        if kms_key_id:
+            self.extra_args["SSEKMSKeyId"] = kms_key_id
         self.progress = progress
 
     def remote_sha256(self, bucket: str, key: str) -> str | None:
@@ -130,7 +140,7 @@ class Uploader:
         # S3 verifies each part against a SHA-256 checksum on arrival. For
         # multipart uploads S3's own checksum is a checksum of the parts, so
         # the whole-file digest is also kept in metadata to detect changes.
-        extra_args = {"ChecksumAlgorithm": "SHA256", "Metadata": {"sha256": digest}}
+        extra_args = {**self.extra_args, "Metadata": {"sha256": digest}}
         self.client.upload_file(
             str(path),
             bucket,
