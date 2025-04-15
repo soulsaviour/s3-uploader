@@ -59,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force", action="store_true", help="upload even when S3 already has identical content"
     )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="list what would be uploaded without uploading"
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -85,13 +88,27 @@ def main(argv=None) -> int:
         kms_key_id=args.kms_key_id,
         progress=args.progress,
     )
-    uploaded, unchanged = uploader.upload_tree(
-        args.source, bucket, prefix, include=args.include, exclude=args.exclude, force=args.force
+    summary = uploader.upload_tree(
+        args.source,
+        bucket,
+        prefix,
+        include=args.include,
+        exclude=args.exclude,
+        force=args.force,
+        dry_run=args.dry_run,
     )
-    for key in uploaded:
-        print(f"uploaded: s3://{bucket}/{key}")
-    print(f"{len(uploaded)} uploaded, {len(unchanged)} unchanged", file=sys.stderr)
-    return 0
+
+    verb = "would upload" if args.dry_run else "uploaded"
+    for key in summary.uploaded:
+        print(f"{verb}: s3://{bucket}/{key}")
+    for key, error in summary.failed:
+        print(f"failed: s3://{bucket}/{key}: {error}", file=sys.stderr)
+    print(
+        f"{len(summary.uploaded)} {verb}, {len(summary.unchanged)} unchanged, "
+        f"{len(summary.failed)} failed",
+        file=sys.stderr,
+    )
+    return 1 if summary.failed else 0
 
 
 if __name__ == "__main__":

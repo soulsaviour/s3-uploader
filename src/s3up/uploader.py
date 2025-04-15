@@ -7,9 +7,11 @@ import hashlib
 import sys
 import threading
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import boto3
+from boto3.exceptions import S3UploadFailedError
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -63,6 +65,13 @@ def sha256_file(path: Path, chunk_size: int = MB) -> str:
         for chunk in iter(lambda: fh.read(chunk_size), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+@dataclass
+class Summary:
+    uploaded: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
 
 
 class Progress:
@@ -132,11 +141,19 @@ class Uploader:
             raise
         return head.get("Metadata", {}).get("sha256")
 
-    def upload(self, path: Path, bucket: str, key: str, *, force: bool = False) -> bool:
-        """Upload one file. Returns False if S3 already has identical content."""
+    def upload(
+        self, path: Path, bucket: str, key: str, *, force: bool = False, dry_run: bool = False
+    ) -> bool:
+        """Upload one file. Returns False if S3 already has identical content.
+
+        With dry_run, nothing is written; the return value says whether the
+        file would have been uploaded.
+        """
         digest = sha256_file(path)
         if not force and self.remote_sha256(bucket, key) == digest:
             return False
+        if dry_run:
+            return True
         # S3 verifies each part against a SHA-256 checksum on arrival. For
         # multipart uploads S3's own checksum is a checksum of the parts, so
         # the whole-file digest is also kept in metadata to detect changes.
@@ -160,13 +177,16 @@ class Uploader:
         include: Sequence[str] = (),
         exclude: Sequence[str] = (),
         force: bool = False,
-    ) -> tuple[list[str], list[str]]:
-        """Upload a file or directory. Returns (uploaded keys, unchanged keys)."""
-        uploaded, unchanged = [], []
+        dry_run: bool = False,
+    ) -> Summary:
+        """Upload a file or directory. One failed file doesn't stop the rest."""
+        summary = Summary()
         for path in iter_files(source, include, exclude):
             key = object_key(prefix, source, path)
-            if self.upload(path, bucket, key, force=force):
-                uploaded.append(key)
-            else:
-                unchanged.append(key)
-        return uploaded, unchanged
+            try:
+                changed = self.upload(path, bucket, key, force=force, dry_run=dry_run)
+            except (ClientError, S3UploadFailedError, OSError) as err:
+                summary.failed.append((key, str(err)))
+                continue
+            (summary.uploaded if changed else summary.unchanged).append(key)
+        return summary
