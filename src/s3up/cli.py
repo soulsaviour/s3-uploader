@@ -5,7 +5,6 @@ from pathlib import Path
 from . import __version__
 from .uploader import Uploader, parse_s3_url
 
-
 STORAGE_CLASSES = [
     "STANDARD",
     "STANDARD_IA",
